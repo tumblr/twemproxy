@@ -118,6 +118,7 @@ struct server_pool {
     uint32_t           server_failure_limit; /* server failure limit */
     unsigned           auto_eject_hosts:1;   /* auto_eject_hosts? */
     unsigned           preconnect:1;         /* preconnect? */
+    unsigned           redis:1;              /* redis? */
 };
 
 void server_ref(struct conn *conn, void *owner);

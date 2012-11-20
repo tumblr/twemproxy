@@ -47,6 +47,7 @@
 #define CONF_DEFAULT_LISTEN_BACKLOG          512
 #define CONF_DEFAULT_ITEM_SIZE_MAX           1048576        /* in bytes */
 #define CONF_DEFAULT_CLIENT_CONNECTIONS      0
+#define CONF_DEFAULT_REDIS                   false
 #define CONF_DEFAULT_PRECONNECT              false
 #define CONF_DEFAULT_AUTO_EJECT_HOSTS        false
 #define CONF_DEFAULT_SERVER_RETRY_TIMEOUT    30 * 1000      /* in msec */
@@ -79,6 +80,7 @@ struct conf_pool {
     int                backlog;               /* backlog: */
     int                item_size_max;         /* item_size_max: */
     int                client_connections;    /* client_connections: */
+    int                redis;                 /* redis: */
     int                preconnect;            /* preconnect: */
     int                auto_eject_hosts;      /* auto_eject_hosts: */
     int                server_connections;    /* server_connections: */

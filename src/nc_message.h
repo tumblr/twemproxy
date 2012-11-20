@@ -22,78 +22,88 @@
 
 typedef void (*msg_parse_t)(struct msg *);
 
+typedef enum msg_parse_result {
+    MSG_PARSE_OK,           /* parsing ok */
+    MSG_PARSE_ERROR,        /* parsing error */
+    MSG_PARSE_REPAIR,       /* more to parse -> repair parsed & unparsed data */
+    MSG_PARSE_FRAGMENT,     /* multi-get request -> fragment */
+    MSG_PARSE_AGAIN,        /* incomplete -> parse again */
+} msg_parse_result_t;
+
 typedef enum msg_type {
     MSG_UNKNOWN,
-    MSG_REQ_GET,            /* retrieval requests */
-    MSG_REQ_GETS,
-    MSG_REQ_DELETE,         /* delete request */
-    MSG_REQ_CAS,            /* cas request */
-    MSG_REQ_SET,            /* storage request */
-    MSG_REQ_ADD,
-    MSG_REQ_REPLACE,
-    MSG_REQ_APPEND,
-    MSG_REQ_PREPEND,
-    MSG_REQ_INCR,           /* arithmetic request */
-    MSG_REQ_DECR,
-    MSG_REQ_QUIT,           /* quit request */
-    MSG_RSP_NUM,
-    MSG_RSP_STORED,
-    MSG_RSP_NOT_STORED,
-    MSG_RSP_EXISTS,
-    MSG_RSP_NOT_FOUND,
-    MSG_RSP_END,
-    MSG_RSP_VALUE,
-    MSG_RSP_DELETED,
-    MSG_RSP_ERROR,          /* error responses */
-    MSG_RSP_CLIENT_ERROR,
-    MSG_RSP_SERVER_ERROR,
+    MSG_REQ_MC_GET,                     /* memcache retrieval requests */
+    MSG_REQ_MC_GETS,
+    MSG_REQ_MC_DELETE,                  /* memcache delete request */
+    MSG_REQ_MC_CAS,                     /* memcache cas request and storage request */
+    MSG_REQ_MC_SET,                     /* memcache storage request */
+    MSG_REQ_MC_ADD,
+    MSG_REQ_MC_REPLACE,
+    MSG_REQ_MC_APPEND,
+    MSG_REQ_MC_PREPEND,
+    MSG_REQ_MC_INCR,                    /* memcache arithmetic request */
+    MSG_REQ_MC_DECR,
+    MSG_REQ_MC_QUIT,                    /* memcache quit request */
+    MSG_RSP_MC_NUM,                     /* memcache arithmetic response */
+    MSG_RSP_MC_STORED,                  /* memcache cas and storage response */
+    MSG_RSP_MC_NOT_STORED,
+    MSG_RSP_MC_EXISTS,
+    MSG_RSP_MC_NOT_FOUND,
+    MSG_RSP_MC_END,
+    MSG_RSP_MC_VALUE,
+    MSG_RSP_MC_DELETED,                 /* memcache delete response */
+    MSG_RSP_MC_ERROR,                   /* memcache error responses */
+    MSG_RSP_MC_CLIENT_ERROR,
+    MSG_RSP_MC_SERVER_ERROR,
     MSG_SENTINEL
 } msg_type_t;
 
 struct msg {
-    TAILQ_ENTRY(msg) c_tqe;           /* link in client q */
-    TAILQ_ENTRY(msg) s_tqe;           /* link in server q */
-    TAILQ_ENTRY(msg) m_tqe;           /* link in send q / free q */
+    TAILQ_ENTRY(msg)   c_tqe;           /* link in client q */
+    TAILQ_ENTRY(msg)   s_tqe;           /* link in server q */
+    TAILQ_ENTRY(msg)   m_tqe;           /* link in send q / free q */
 
-    uint64_t         id;              /* message id */
-    struct msg       *peer;           /* message peer */
-    struct conn      *owner;          /* message owner - client | server */
+    uint64_t           id;              /* message id */
+    struct msg         *peer;           /* message peer */
+    struct conn        *owner;          /* message owner - client | server */
 
-    struct rbnode    tmo_rbe;         /* entry in rbtree */
+    struct rbnode      tmo_rbe;         /* entry in rbtree */
 
-    struct mhdr      mhdr;            /* message mbuf header */
-    uint32_t         mlen;            /* message length */
+    struct mhdr        mhdr;            /* message mbuf header */
+    uint32_t           mlen;            /* message length */
 
-    int              state;           /* current parser state */
-    uint8_t          *pos;            /* parser position marker */
-    uint8_t          *token;          /* token marker */
+    int                state;           /* current parser state */
+    uint8_t            *pos;            /* parser position marker */
+    uint8_t            *token;          /* token marker */
 
-    msg_parse_t      parse;           /* message parsing handler */
-    int              result;          /* message parsing result */
+    msg_parse_t        parser;          /* message parser */
+    msg_parse_result_t result;          /* message parsing result */
 
-    msg_type_t       type;            /* message type */
-    uint8_t          *key_start;      /* key start */
-    uint8_t          *key_end;        /* key end */
-    uint32_t         vlen;            /* value length */
-    uint32_t         vlen_rem;        /* value length remaining for parse phase */
-    uint8_t          *end;            /* end marker */
+    msg_type_t         type;            /* message type */
 
-    uint64_t         frag_id;         /* id of fragmented message */
-    err_t            err;             /* errno on error? */
-    unsigned         error:1;         /* error? */
-    unsigned         ferror:1;        /* one or more fragments are in error? */
-    unsigned         request:1;       /* request? or response? */
-    unsigned         storage:1;       /* storage request? */
-    unsigned         retrieval:1;     /* retrieval request? */
-    unsigned         arithmetic:1;    /* arithmetic request? */
-    unsigned         delete:1;        /* delete request? */
-    unsigned         quit:1;          /* quit request? */
-    unsigned         cas:1;           /* cas? */
-    unsigned         noreply:1;       /* noreply? */
-    unsigned         done:1;          /* done? */
-    unsigned         fdone:1;         /* all fragments are done? */
-    unsigned         last_fragment:1; /* last fragment of retrieval request? */
-    unsigned         swallow:1;       /* swallow response? */
+    uint8_t            *key_start;      /* key start */
+    uint8_t            *key_end;        /* key end */
+
+    uint32_t           vlen;            /* value length (memcache) */
+    uint32_t           vlen_rem;        /* value length remaining for parse phase */
+    uint8_t            *end;            /* end marker (memcache) */
+
+    struct msg         *frag_owner;     /* owner of fragment message */
+    uint32_t           nfrag;           /* # fragment */
+    uint64_t           frag_id;         /* id of fragmented message */
+
+    err_t              err;             /* errno on error? */
+    unsigned           error:1;         /* error? */
+    unsigned           ferror:1;        /* one or more fragments are in error? */
+    unsigned           request:1;       /* request? or response? */
+    unsigned           quit:1;          /* quit request? */
+    unsigned           noreply:1;       /* noreply? */
+    unsigned           done:1;          /* done? */
+    unsigned           fdone:1;         /* all fragments are done? */
+    unsigned           first_fragment:1;/* first fragment? */
+    unsigned           last_fragment:1; /* last fragment? */
+    unsigned           swallow:1;       /* swallow response? */
+    unsigned           redis:1;         /* redis? */
 };
 
 TAILQ_HEAD(msg_tqh, msg);
@@ -104,7 +114,7 @@ void msg_tmo_delete(struct msg *msg);
 
 void msg_init(void);
 void msg_deinit(void);
-struct msg *msg_get(struct conn *conn, bool request);
+struct msg *msg_get(struct conn *conn, bool request, bool redis);
 void msg_put(struct msg *msg);
 struct msg *msg_get_error(err_t err);
 void msg_dump(struct msg *msg);

@@ -21,8 +21,8 @@
 #include <sys/uio.h>
 
 #include <nc_core.h>
-#include <nc_parse.h>
 #include <nc_server.h>
+#include <proto/nc_proto.h>
 
 #if (IOV_MAX > 128)
 #define NC_IOV_MAX 128
@@ -217,38 +217,40 @@ done:
     msg->pos = NULL;
     msg->token = NULL;
 
-    msg->parse = NULL;
-    msg->result = PARSE_OK;
+    msg->parser = NULL;
+    msg->result = MSG_PARSE_OK;
 
     msg->type = MSG_UNKNOWN;
+
     msg->key_start = NULL;
     msg->key_end = NULL;
+
     msg->vlen = 0;
     msg->vlen_rem = 0;
     msg->end = NULL;
+
+    msg->frag_owner = NULL;
+    msg->nfrag = 0;
     msg->frag_id = 0;
 
     msg->err = 0;
     msg->error = 0;
     msg->ferror = 0;
     msg->request = 0;
-    msg->storage = 0;
-    msg->retrieval = 0;
-    msg->arithmetic = 0;
-    msg->delete = 0;
     msg->quit = 0;
-    msg->cas = 0;
     msg->noreply = 0;
     msg->done = 0;
     msg->fdone = 0;
+    msg->first_fragment = 0;
     msg->last_fragment = 0;
     msg->swallow = 0;
+    msg->redis = 0;
 
     return msg;
 }
 
 struct msg *
-msg_get(struct conn *conn, bool request)
+msg_get(struct conn *conn, bool request, bool redis)
 {
     struct msg *msg;
 
@@ -259,7 +261,17 @@ msg_get(struct conn *conn, bool request)
 
     msg->owner = conn;
     msg->request = request ? 1 : 0;
-    msg->parse = request ? parse_request : parse_response;
+    msg->redis = redis ? 1 : 0;
+
+    if (redis) {
+        NOT_REACHED();
+    } else {
+        if (request) {
+            msg->parser = memcache_parse_req;
+        } else {
+            msg->parser = memcache_parse_rsp;
+        }
+    }
 
     log_debug(LOG_VVERB, "get msg %p id %"PRIu64" request %d owner sd %d",
               msg, msg->id, msg->request, conn->sd);
@@ -281,7 +293,7 @@ msg_get_error(err_t err)
     }
 
     msg->state = 0;
-    msg->type = MSG_RSP_SERVER_ERROR;
+    msg->type = MSG_RSP_MC_SERVER_ERROR;
 
     mbuf = mbuf_get();
     if (mbuf == NULL) {
@@ -401,7 +413,7 @@ msg_parsed(struct context *ctx, struct conn *conn, struct msg *msg)
         return NC_ENOMEM;
     }
 
-    nmsg = msg_get(msg->owner, msg->request);
+    nmsg = msg_get(msg->owner, msg->request, conn->redis);
     if (nmsg == NULL) {
         mbuf_put(nbuf);
         return NC_ENOMEM;
@@ -427,9 +439,9 @@ msg_fragment(struct context *ctx, struct conn *conn, struct msg *msg)
 
     ASSERT(conn->client && !conn->proxy);
     ASSERT(msg->request);
-    ASSERT(msg->type == MSG_REQ_GET || msg->type == MSG_REQ_GETS);
+    ASSERT(msg->type == MSG_REQ_MC_GET || msg->type == MSG_REQ_MC_GETS);
 
-    headcopy = (msg->type == MSG_REQ_GET) ? MCOPY_GET : MCOPY_GETS;
+    headcopy = (msg->type == MSG_REQ_MC_GET) ? MCOPY_GET : MCOPY_GETS;
     tailcopy = MCOPY_CRLF;
 
     nbuf = mbuf_split(&msg->mhdr, msg->pos, headcopy, tailcopy);
@@ -437,7 +449,7 @@ msg_fragment(struct context *ctx, struct conn *conn, struct msg *msg)
         return NC_ENOMEM;
     }
 
-    nmsg = msg_get(msg->owner, msg->request);
+    nmsg = msg_get(msg->owner, msg->request, msg->redis);
     if (nmsg == NULL) {
         mbuf_put(nbuf);
         return NC_ENOMEM;
@@ -449,13 +461,57 @@ msg_fragment(struct context *ctx, struct conn *conn, struct msg *msg)
     nmsg->mlen = mbuf_length(nbuf);
     msg->mlen -= nmsg->mlen;
 
-    /* attach unique fragment id to all fragments of the same message */
+    /*
+     * Attach unique fragment id to all fragments of the message vector. All
+     * fragments of the message, including the first fragment point to the
+     * first fragment through the frag_owner pointer. The first_fragment and
+     * last_fragment identify first and last fragment respectively.
+     *
+     * For example, a message vector given below is split into 3 fragments:
+     *  'get key1 key2 key3\r\n'
+     *  Or,
+     *  '*4\r\n$4\r\nmget\r\n$4\r\nkey1\r\n$4\r\nkey2\r\n$4\r\nkey3\r\n'
+     *
+     *   +--------------+
+     *   |  msg vector  |
+     *   |(original msg)|
+     *   +--------------+
+     *
+     *       frag_owner         frag_owner
+     *     /-----------+      /------------+
+     *     |           |      |            |
+     *     |           v      v            |
+     *   +--------------------+     +---------------------+
+     *   |   frag_id = 10     |     |   frag_id = 10      |
+     *   | first_fragment = 1 |     |  first_fragment = 0 |
+     *   | last_fragment = 0  |     |  last_fragment = 0  |
+     *   |     nfrag = 3      |     |      nfrag = 0      |
+     *   +--------------------+     +---------------------+
+     *               ^
+     *               |  frag_owner
+     *               \-------------+
+     *                             |
+     *                             |
+     *                  +---------------------+
+     *                  |   frag_id = 10      |
+     *                  |  first_fragment = 0 |
+     *                  |  last_fragment = 1  |
+     *                  |      nfrag = 0      |
+     *                  +---------------------+
+     *
+     *
+     */
     if (msg->frag_id == 0) {
         msg->frag_id = ++frag_id;
+        msg->first_fragment = 1;
+        msg->nfrag = 1;
+        msg->frag_owner = msg;
     }
     nmsg->frag_id = msg->frag_id;
     msg->last_fragment = 0;
     nmsg->last_fragment = 1;
+    nmsg->frag_owner = msg->frag_owner;
+    msg->frag_owner->nfrag++;
 
     stats_pool_incr(ctx, conn->owner, fragments);
 
@@ -477,7 +533,7 @@ msg_repair(struct context *ctx, struct conn *conn, struct msg *msg)
         return NC_ENOMEM;
     }
     mbuf_insert(&msg->mhdr, nbuf);
-    msg->pos = nbuf->last;
+    msg->pos = nbuf->pos;
 
     return NC_OK;
 }
@@ -493,22 +549,22 @@ msg_parse(struct context *ctx, struct conn *conn, struct msg *msg)
         return NC_OK;
     }
 
-    msg->parse(msg);
+    msg->parser(msg);
 
     switch (msg->result) {
-    case PARSE_OK:
+    case MSG_PARSE_OK:
         status = msg_parsed(ctx, conn, msg);
         break;
 
-    case PARSE_FRAGMENT:
+    case MSG_PARSE_FRAGMENT:
         status = msg_fragment(ctx, conn, msg);
         break;
 
-    case PARSE_REPAIR:
+    case MSG_PARSE_REPAIR:
         status = msg_repair(ctx, conn, msg);
         break;
 
-    case PARSE_AGAIN:
+    case MSG_PARSE_AGAIN:
         status = NC_OK;
         break;
 
@@ -539,7 +595,6 @@ msg_recv_chain(struct context *ctx, struct conn *conn, struct msg *msg)
         mbuf_insert(&msg->mhdr, mbuf);
         msg->pos = mbuf->pos;
     }
-    ASSERT(msg->pos == mbuf->last);
     ASSERT(mbuf->end - mbuf->last > 0);
 
     msize = mbuf_size(mbuf);
