@@ -168,7 +168,7 @@ struct msg {
 
     struct mhdr          mhdr;            /* message mbuf header */
     uint32_t             mlen;            /* message length */
-
+    
     int                  state;           /* current parser state */
     uint8_t              *pos;            /* parser position marker */
     uint8_t              *token;          /* token marker */
@@ -188,6 +188,7 @@ struct msg {
 
     uint32_t             vlen;            /* value length (memcache) */
     uint8_t              *end;            /* end marker (memcache) */
+    uint32_t             vlen_rem;        /* value length remaining for parse phase */
 
     uint8_t              *narg_start;     /* narg start (redis) */
     uint8_t              *narg_end;       /* narg end (redis) */
@@ -199,7 +200,7 @@ struct msg {
     struct msg           *frag_owner;     /* owner of fragment message */
     uint32_t             nfrag;           /* # fragment */
     uint64_t             frag_id;         /* id of fragmented message */
-
+    
     err_t                err;             /* errno on error? */
     unsigned             error:1;         /* error? */
     unsigned             ferror:1;        /* one or more fragments are in error? */

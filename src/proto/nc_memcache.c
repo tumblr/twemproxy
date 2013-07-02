@@ -425,7 +425,7 @@ memcache_parse_req(struct msg *r)
                 }
                 /* vlen_start <- p */
                 r->token = p;
-                r->vlen = (uint32_t)(ch - '0');
+                r->vlen_rem = (uint32_t)(ch - '0');
                 state = SW_VLEN;
             }
 
@@ -433,7 +433,7 @@ memcache_parse_req(struct msg *r)
 
         case SW_VLEN:
             if (isdigit(ch)) {
-                r->vlen = r->vlen * 10 + (uint32_t)(ch - '0');
+                r->vlen_rem = r->vlen_rem * 10 + (uint32_t)(ch - '0');
             } else if (memcache_cas(r)) {
                 if (ch != ' ') {
                     goto error;
@@ -441,11 +441,13 @@ memcache_parse_req(struct msg *r)
                 /* vlen_end <- p - 1 */
                 p = p - 1; /* go back by 1 byte */
                 r->token = NULL;
+                r->vlen = r->vlen_rem;
                 state = SW_SPACES_BEFORE_CAS;
             } else if (ch == ' ' || ch == CR) {
                 /* vlen_end <- p - 1 */
                 p = p - 1; /* go back by 1 byte */
                 r->token = NULL;
+                r->vlen = r->vlen_rem;
                 state = SW_RUNTO_CRLF;
             } else {
                 goto error;
@@ -495,10 +497,10 @@ memcache_parse_req(struct msg *r)
             break;
 
         case SW_VAL:
-            m = p + r->vlen;
+            m = p + r->vlen_rem;
             if (m >= b->last) {
-                ASSERT(r->vlen >= (uint32_t)(b->last - p));
-                r->vlen -= (uint32_t)(b->last - p);
+                ASSERT(r->vlen_rem >= (uint32_t)(b->last - p));
+                r->vlen_rem -= (uint32_t)(b->last - p);
                 m = b->last - 1;
                 p = m; /* move forward by vlen bytes */
                 break;
@@ -979,7 +981,9 @@ memcache_parse_rsp(struct msg *r)
                 if (!isdigit(ch)) {
                     goto error;
                 }
-                p = p - 1; /* go back by 1 byte */
+                /* vlen_start <- p */
+                r->token = p;
+                r->vlen_rem = (uint32_t)(ch - '0');
                 state = SW_VLEN;
             }
 
@@ -991,11 +995,12 @@ memcache_parse_rsp(struct msg *r)
                 r->token = p;
                 r->vlen = (uint32_t)(ch - '0');
             } else if (isdigit(ch)) {
-                r->vlen = r->vlen * 10 + (uint32_t)(ch - '0');
+                r->vlen_rem = r->vlen_rem * 10 + (uint32_t)(ch - '0');
             } else if (ch == ' ' || ch == CR) {
                 /* vlen_end <- p - 1 */
                 p = p - 1; /* go back by 1 byte */
                 r->token = NULL;
+                r->vlen = r->vlen_rem;
                 state = SW_RUNTO_CRLF;
             } else {
                 goto error;
@@ -1017,10 +1022,10 @@ memcache_parse_rsp(struct msg *r)
             break;
 
         case SW_VAL:
-            m = p + r->vlen;
+            m = p + r->vlen_rem;
             if (m >= b->last) {
-                ASSERT(r->vlen >= (uint32_t)(b->last - p));
-                r->vlen -= (uint32_t)(b->last - p);
+                ASSERT(r->vlen_rem >= (uint32_t)(b->last - p));
+                r->vlen_rem -= (uint32_t)(b->last - p);
                 m = b->last - 1;
                 p = m; /* move forward by vlen bytes */
                 break;

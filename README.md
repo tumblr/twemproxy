@@ -93,6 +93,7 @@ nutcracker can be configured through a YAML file specified by the -c or --conf-f
  + random
 + **timeout**: The timeout value in msec that we wait for to establish a connection to the server or receive a response from a server. By default, we wait indefinitely.
 + **backlog**: The TCP backlog argument. Defaults to 512.
++ **item_size_max**: The maximum size of an object. Defaults to 1048576. If you have a custom memcached build with a larger size, it can be adjusted here.
 + **preconnect**: A boolean value that controls if nutcracker should preconnect to all the servers in this pool on process start. Defaults to false.
 + **redis**: A boolean value that controls if a server pool speaks redis or memcached protocol. Defaults to false.
 + **server_connections**: The maximum number of connections that can be opened to each server. By default, we open at most 1 server connection.
