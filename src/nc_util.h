@@ -23,6 +23,7 @@
 #define LF                  (uint8_t) 10
 #define CR                  (uint8_t) 13
 #define CRLF                "\x0d\x0a"
+#define CRLF_LEN            (sizeof("\x0d\x0a") - 1)
 
 #define NELEMS(a)           ((sizeof(a)) / sizeof((a)[0]))
 
@@ -189,6 +190,7 @@ int _scnprintf(char *buf, size_t size, const char *fmt, ...);
 int _vscnprintf(char *buf, size_t size, const char *fmt, va_list args);
 int64_t nc_usec_now(void);
 int64_t nc_msec_now(void);
+struct timespec nc_millisec_to_timespec(int millisec);
 
 /*
  * Address resolution for internet (ipv4 and ipv6) and unix domain

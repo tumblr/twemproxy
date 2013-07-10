@@ -17,7 +17,6 @@
 
 #include <nc_core.h>
 #include <nc_server.h>
-#include <nc_event.h>
 
 struct msg *
 req_get(struct conn *conn)
@@ -58,15 +57,15 @@ req_put(struct msg *msg)
  * Return true if request is done, false otherwise
  *
  * A request is done, if we received response for the given request.
- * A multiget request is done if we received responses for all its
+ * A request vector is done if we received responses for all its
  * fragments.
  */
 bool
 req_done(struct conn *conn, struct msg *msg)
 {
     struct msg *cmsg, *pmsg; /* current and previous message */
-    uint64_t id;
-    uint32_t nfragment;
+    uint64_t id;             /* fragment id */
+    uint32_t nfragment;      /* # fragment */
 
     ASSERT(conn->client && !conn->proxy);
     ASSERT(msg->request);
@@ -85,7 +84,7 @@ req_done(struct conn *conn, struct msg *msg)
         return true;
     }
 
-    /* check all fragments of the given request are done */
+    /* check all fragments of the given request vector are done */
 
     for (pmsg = msg, cmsg = TAILQ_PREV(msg, msg_tqh, c_tqe);
          cmsg != NULL && cmsg->frag_id == id;
@@ -110,7 +109,10 @@ req_done(struct conn *conn, struct msg *msg)
     }
 
     /*
-     * Mark all fragments of the given request to be done to speed up
+     * At this point, all the fragments including the last fragment have
+     * been received.
+     *
+     * Mark all fragments of the given request vector to be done to speed up
      * future req_done calls for any of fragments of this request
      */
 
@@ -130,6 +132,10 @@ req_done(struct conn *conn, struct msg *msg)
         cmsg->fdone = 1;
         nfragment++;
     }
+
+    ASSERT(msg->frag_owner->nfrag == nfragment);
+
+    msg->post_coalesce(msg->frag_owner);
 
     log_debug(LOG_DEBUG, "req from c %d with fid %"PRIu64" and %"PRIu32" "
               "fragments is done", conn->sd, id, nfragment);
@@ -421,7 +427,7 @@ req_forward_error(struct context *ctx, struct conn *conn, struct msg *msg)
     }
 
     if (req_done(conn, TAILQ_FIRST(&conn->omsg_q))) {
-        status = event_add_out(ctx->ep, conn);
+        status = event_add_out(ctx->evb, conn);
         if (status != NC_OK) {
             conn->err = errno;
         }
@@ -442,6 +448,7 @@ req_forward(struct context *ctx, struct conn *c_conn, struct msg *msg)
 {
     rstatus_t status;
     struct conn *s_conn;
+    struct server_pool *pool;
     uint8_t *key;
     uint32_t keylen;
 
@@ -452,8 +459,33 @@ req_forward(struct context *ctx, struct conn *c_conn, struct msg *msg)
         c_conn->enqueue_outq(ctx, c_conn, msg);
     }
 
-    key = msg->key_start;
-    keylen = (uint32_t)(msg->key_end - msg->key_start + 1);
+    pool = c_conn->owner;
+    key = NULL;
+    keylen = 0;
+
+    /*
+     * If hash_tag: is configured for this server pool, we use the part of
+     * the key within the hash tag as an input to the distributor. Otherwise
+     * we use the full key
+     */
+    if (!string_empty(&pool->hash_tag)) {
+        struct string *tag = &pool->hash_tag;
+        uint8_t *tag_start, *tag_end;
+
+        tag_start = nc_strchr(msg->key_start, msg->key_end, tag->data[0]);
+        if (tag_start != NULL) {
+            tag_end = nc_strchr(tag_start + 1, msg->key_end, tag->data[1]);
+            if (tag_end != NULL) {
+                key = tag_start + 1;
+                keylen = (uint32_t)(tag_end - key);
+            }
+        }
+    }
+
+    if (keylen == 0) {
+        key = msg->key_start;
+        keylen = (uint32_t)(msg->key_end - msg->key_start);
+    }
 
     s_conn = server_pool_conn(ctx, c_conn->owner, key, keylen);
     if (s_conn == NULL) {
@@ -464,7 +496,7 @@ req_forward(struct context *ctx, struct conn *c_conn, struct msg *msg)
 
     /* enqueue the message (request) into server inq */
     if (TAILQ_EMPTY(&s_conn->imsg_q)) {
-        status = event_add_out(ctx->ep, s_conn);
+        status = event_add_out(ctx->evb, s_conn);
         if (status != NC_OK) {
             req_forward_error(ctx, c_conn, msg);
             s_conn->err = errno;
@@ -515,7 +547,7 @@ req_send_next(struct context *ctx, struct conn *conn)
     nmsg = TAILQ_FIRST(&conn->imsg_q);
     if (nmsg == NULL) {
         /* nothing to send as the server inq is empty */
-        status = event_del_out(ctx->ep, conn);
+        status = event_del_out(ctx->evb, conn);
         if (status != NC_OK) {
             conn->err = errno;
         }

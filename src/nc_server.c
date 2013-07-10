@@ -19,7 +19,6 @@
 #include <unistd.h>
 
 #include <nc_core.h>
-#include <nc_event.h>
 #include <nc_server.h>
 #include <nc_conf.h>
 
@@ -367,7 +366,7 @@ server_close(struct context *ctx, struct conn *conn)
             msg->err = conn->err;
 
             if (req_done(c_conn, TAILQ_FIRST(&c_conn->omsg_q))) {
-                event_add_out(ctx->ep, msg->owner);
+                event_add_out(ctx->evb, msg->owner);
             }
 
             log_debug(LOG_INFO, "close s %d schedule error for req %"PRIu64" "
@@ -397,7 +396,7 @@ server_close(struct context *ctx, struct conn *conn)
             msg->err = conn->err;
 
             if (req_done(c_conn, TAILQ_FIRST(&c_conn->omsg_q))) {
-                event_add_out(ctx->ep, msg->owner);
+                event_add_out(ctx->evb, msg->owner);
             }
 
             log_debug(LOG_INFO, "close s %d schedule error for req %"PRIu64" "
@@ -451,7 +450,7 @@ server_connect(struct context *ctx, struct server *server, struct conn *conn)
     log_debug(LOG_VVERB, "connect to server '%.*s'", server->pname.len,
               server->pname.data);
 
-	conn->sd = socket(conn->family, SOCK_STREAM, 0);
+    conn->sd = socket(conn->family, SOCK_STREAM, 0);
     if (conn->sd < 0) {
         log_error("socket for server '%.*s' failed: %s", server->pname.len,
                   server->pname.data, strerror(errno));
@@ -467,24 +466,26 @@ server_connect(struct context *ctx, struct server *server, struct conn *conn)
         goto error;
     }
 
-    status = nc_set_tcpnodelay(conn->sd);
-    if (status != NC_OK) {
-        log_warn("set tcpnodelay on s %d for server '%.*s' failed, ignored: %s",
-                 conn->sd, server->pname.len, server->pname.data,
-                 strerror(errno));
+    if (server->pname.data[0] != '/') {
+        status = nc_set_tcpnodelay(conn->sd);
+        if (status != NC_OK) {
+            log_warn("set tcpnodelay on s %d for server '%.*s' failed, ignored: %s",
+                     conn->sd, server->pname.len, server->pname.data,
+                     strerror(errno));
+        }
     }
 
-    status = event_add_conn(ctx->ep, conn);
+    status = event_add_conn(ctx->evb, conn);
     if (status != NC_OK) {
-        log_error("event add conn e %d s %d for server '%.*s' failed: %s",
-                  ctx->ep, conn->sd, server->pname.len, server->pname.data,
+        log_error("event add conn s %d for server '%.*s' failed: %s",
+                  conn->sd, server->pname.len, server->pname.data,
                   strerror(errno));
         goto error;
     }
 
     ASSERT(!conn->connecting && !conn->connected);
 
-	status = connect(conn->sd, conn->addr, conn->addrlen);
+    status = connect(conn->sd, conn->addr, conn->addrlen);
     if (status != NC_OK) {
         if (errno == EINPROGRESS) {
             conn->connecting = 1;

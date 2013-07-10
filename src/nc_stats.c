@@ -21,23 +21,55 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/epoll.h>
 #include <netinet/in.h>
 
 #include <nc_core.h>
 #include <nc_server.h>
 
-#define DEFINE_ACTION(_name, _type) {.type = _type, .name = string(#_name) },
+struct stats_desc {
+    char *name; /* stats name */
+    char *desc; /* stats description */
+};
+
+#define DEFINE_ACTION(_name, _type, _desc) { .type = _type, .name = string(#_name) },
 static struct stats_metric stats_pool_codec[] = {
     STATS_POOL_CODEC( DEFINE_ACTION )
 };
-#undef DEFINE_ACTION
 
-#define DEFINE_ACTION(_name, _type) {.type = _type, .name = string(#_name) },
 static struct stats_metric stats_server_codec[] = {
     STATS_SERVER_CODEC( DEFINE_ACTION )
 };
 #undef DEFINE_ACTION
+
+#define DEFINE_ACTION(_name, _type, _desc) { .name = #_name, .desc = _desc },
+static struct stats_desc stats_pool_desc[] = {
+    STATS_POOL_CODEC( DEFINE_ACTION )
+};
+
+static struct stats_desc stats_server_desc[] = {
+    STATS_SERVER_CODEC( DEFINE_ACTION )
+};
+#undef DEFINE_ACTION
+
+void
+stats_describe(void)
+{
+    uint32_t i;
+
+    log_stderr("pool stats:");
+    for (i = 0; i < NELEMS(stats_pool_desc); i++) {
+        log_stderr("  %-20s\"%s\"", stats_pool_desc[i].name,
+                   stats_pool_desc[i].desc);
+    }
+
+    log_stderr("");
+
+    log_stderr("server stats:");
+    for (i = 0; i < NELEMS(stats_server_desc); i++) {
+        log_stderr("  %-20s\"%s\"", stats_server_desc[i].name,
+                   stats_server_desc[i].desc);
+    }
+}
 
 static void
 stats_metric_init(struct stats_metric *stm)
@@ -140,7 +172,7 @@ stats_server_init(struct stats_server *sts, struct server *s)
 {
     rstatus_t status;
 
-    sts->name = s->pname;
+    sts->name = s->name;
     array_null(&sts->metric);
 
     status = stats_server_metric_init(sts);
@@ -744,15 +776,7 @@ stats_loop(void *arg)
     int n;
 
     for (;;) {
-        n = epoll_wait(st->ep, &st->event, 1, st->interval);
-        if (n < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            log_error("epoll wait on e %d with event m %d failed: %s",
-                      st->ep, st->sd, strerror(errno));
-            break;
-        }
+        n = event_wait(st->st_evb, st->interval);
 
         /* aggregate stats from shadow (b) -> sum (c) */
         stats_aggregate(st);
@@ -793,8 +817,8 @@ stats_listen(struct stats *st)
 
     status = bind(st->sd, (struct sockaddr *)&si.addr, si.addrlen);
     if (status < 0) {
-        log_error("bind on m %d to addr '%s:%u' failed: %s", st->sd,
-                  STATS_ADDR, st->port, strerror(errno));
+        log_error("bind on m %d to addr '%.*s:%u' failed: %s", st->sd,
+                  st->addr.len, st->addr.data, st->port, strerror(errno));
         return NC_ERROR;
     }
 
@@ -804,8 +828,8 @@ stats_listen(struct stats *st)
         return NC_ERROR;
     }
 
-    log_debug(LOG_NOTICE, "m %d listening on '%s:%u'", st->sd, STATS_ADDR,
-              st->port);
+    log_debug(LOG_NOTICE, "m %d listening on '%.*s:%u'", st->sd,
+              st->addr.len, st->addr.data, st->port);
 
     return NC_OK;
 }
@@ -814,7 +838,6 @@ static rstatus_t
 stats_start_aggregator(struct stats *st)
 {
     rstatus_t status;
-    struct epoll_event ev;
 
     if (!stats_enabled) {
         return NC_OK;
@@ -825,25 +848,28 @@ stats_start_aggregator(struct stats *st)
         return status;
     }
 
-    st->ep = epoll_create(10);
-    if (st->ep < 0) {
-        log_error("epoll create failed: %s", strerror(errno));
+    st->st_evb = evbase_create(1, NULL);
+    if (st->st_evb == NULL) {
+        log_error("stats aggregator create failed: %s", strerror(errno));
         return NC_ERROR;
     }
 
-    ev.data.fd = st->sd;
-    ev.events = EPOLLIN;
+    ASSERT(st->st_evb != NULL);
+    ASSERT(st->sd >= 0);
 
-    status = epoll_ctl(st->ep, EPOLL_CTL_ADD, st->sd, &ev);
+    status = event_add_st(st->st_evb, st->sd);
     if (status < 0) {
-        log_error("epoll ctl on e %d sd %d failed: %s", st->ep, st->sd,
-                  strerror(errno));
+        log_error("stats aggregator create failed: %s", strerror(errno));
+        evbase_destroy(st->st_evb);
+        st->st_evb = NULL;
         return NC_ERROR;
     }
 
     status = pthread_create(&st->tid, NULL, stats_loop, st);
     if (status < 0) {
         log_error("stats aggregator create failed: %s", strerror(status));
+        evbase_destroy(st->st_evb);
+        st->st_evb = NULL;
         return NC_ERROR;
     }
 
@@ -858,12 +884,13 @@ stats_stop_aggregator(struct stats *st)
     }
 
     close(st->sd);
-    close(st->ep);
+    evbase_destroy(st->st_evb);
+    st->st_evb = NULL;
 }
 
 struct stats *
-stats_create(uint16_t stats_port, int stats_interval, char *source,
-             struct array *server_pool)
+stats_create(uint16_t stats_port, char *stats_ip, int stats_interval,
+             char *source, struct array *server_pool)
 {
     rstatus_t status;
     struct stats *st;
@@ -875,7 +902,7 @@ stats_create(uint16_t stats_port, int stats_interval, char *source,
 
     st->port = stats_port;
     st->interval = stats_interval;
-    string_set_text(&st->addr, STATS_ADDR);
+    string_set_raw(&st->addr, stats_ip);
 
     st->start_ts = (int64_t)time(NULL);
 
@@ -888,7 +915,7 @@ stats_create(uint16_t stats_port, int stats_interval, char *source,
     array_null(&st->sum);
 
     st->tid = (pthread_t) -1;
-    st->ep = -1;
+    st->st_evb = NULL;
     st->sd = -1;
 
     string_set_text(&st->service_str, "service");

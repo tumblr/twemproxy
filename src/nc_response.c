@@ -17,7 +17,6 @@
 
 #include <nc_core.h>
 #include <nc_server.h>
-#include <nc_event.h>
 
 struct msg *
 rsp_get(struct conn *conn)
@@ -81,7 +80,7 @@ rsp_make_error(struct context *ctx, struct conn *conn, struct msg *msg)
         rsp_put(pmsg);
     }
 
-    return msg_get_error(err);
+    return msg_get_error(conn->redis, err);
 }
 
 struct msg *
@@ -157,11 +156,9 @@ rsp_filter(struct context *ctx, struct conn *conn, struct msg *msg)
 
     pmsg = TAILQ_FIRST(&conn->omsg_q);
     if (pmsg == NULL) {
-        log_error("filter stray rsp %"PRIu64" len %"PRIu32" on s %d", msg->id,
-                  msg->mlen, conn->sd);
+        log_debug(LOG_ERR, "filter stray rsp %"PRIu64" len %"PRIu32" on s %d",
+                  msg->id, msg->mlen, conn->sd);
         rsp_put(msg);
-        errno = EINVAL;
-        conn->err = errno;
         return true;
     }
     ASSERT(pmsg->peer == NULL);
@@ -216,53 +213,13 @@ rsp_forward(struct context *ctx, struct conn *s_conn, struct msg *msg)
     pmsg->peer = msg;
     msg->peer = pmsg;
 
-    /*
-     * Readjust responses of fragmented messages by not including the end
-     * marker for all but the last response
-     *
-     * Valid responses for a fragmented requests are MSG_RSP_MC_VALUE or,
-     * MSG_RSP_MC_END. For an invalid response, we send out SERVER_ERRROR
-     * with EINVAL errno
-     */
-    if (pmsg->frag_id != 0) {
-        if (msg->type != MSG_RSP_MC_VALUE && msg->type != MSG_RSP_MC_END) {
-            pmsg->error = 1;
-            pmsg->err = EINVAL;
-        } else if (!pmsg->last_fragment) {
-            ASSERT(msg->end != NULL);
-            for (;;) {
-                struct mbuf *mbuf;
-
-                mbuf = STAILQ_LAST(&msg->mhdr, mbuf, next);
-                ASSERT(mbuf != NULL);
-
-                /*
-                 * We cannot assert that end marker points to the last mbuf
-                 * Consider a scenario where end marker points to the
-                 * penultimate mbuf and the last mbuf only contains spaces
-                 * and CRLF: mhdr -> [...END] -> [\r\n]
-                 */
-
-                if (msg->end >= mbuf->pos && msg->end < mbuf->last) {
-                    /* end marker is within this mbuf */
-                    msg->mlen -= (uint32_t)(mbuf->last - msg->end);
-                    mbuf->last = msg->end;
-                    break;
-                }
-
-                /* end marker is not in this mbuf */
-                msg->mlen -= mbuf_length(mbuf);
-                mbuf_remove(&msg->mhdr, mbuf);
-                mbuf_put(mbuf);
-            }
-        }
-    }
+    msg->pre_coalesce(msg);
 
     c_conn = pmsg->owner;
     ASSERT(c_conn->client && !c_conn->proxy);
 
     if (req_done(c_conn, TAILQ_FIRST(&c_conn->omsg_q))) {
-        status = event_add_out(ctx->ep, c_conn);
+        status = event_add_out(ctx->evb, c_conn);
         if (status != NC_OK) {
             c_conn->err = errno;
         }
@@ -307,7 +264,7 @@ rsp_send_next(struct context *ctx, struct conn *conn)
             log_debug(LOG_INFO, "c %d is done", conn->sd);
         }
 
-        status = event_del_out(ctx->ep, conn);
+        status = event_del_out(ctx->evb, conn);
         if (status != NC_OK) {
             conn->err = errno;
         }

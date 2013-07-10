@@ -40,8 +40,18 @@
 # define NC_STATS 0
 #endif
 
+#ifdef HAVE_EPOLL
+#define NC_HAVE_EPOLL 1
+#elif HAVE_KQUEUE
+#define NC_HAVE_KQUEUE 1
+#endif
+
 #ifdef HAVE_LITTLE_ENDIAN
 # define NC_LITTLE_ENDIAN 1
+#endif
+
+#ifdef HAVE_BACKTRACE
+#define NC_HAVE_BACKTRACE 1
 #endif
 
 #define NC_OK        0
@@ -65,7 +75,6 @@ struct mbuf;
 struct mhdr;
 struct conf;
 struct stats;
-struct epoll_event;
 struct instance;
 
 #include <stddef.h>
@@ -90,6 +99,7 @@ struct instance;
 #include <nc_rbtree.h>
 #include <nc_log.h>
 #include <nc_util.h>
+#include <event/nc_event.h>
 #include <nc_stats.h>
 #include <nc_mbuf.h>
 #include <nc_message.h>
@@ -101,13 +111,11 @@ struct context {
     struct stats       *stats;      /* stats */
 
     struct array       pool;        /* server_pool[] */
-
-    int                ep;          /* epoll device */
-    int                nevent;      /* # epoll event */
+    struct evbase      *evb;
     int                max_timeout; /* epoll wait max timeout in msec */
-    int                timeout;     /* epoll wait timeout in msec */
-    struct epoll_event *event;      /* epoll event */
+    int                timeout;
 };
+
 
 struct instance {
     struct context  *ctx;                        /* active context */
@@ -116,6 +124,7 @@ struct instance {
     char            *conf_filename;              /* configuration filename */
     uint16_t        stats_port;                  /* stats monitoring port */
     int             stats_interval;              /* stats aggregation interval */
+    char            *stats_addr;                 /* stats monitoring addr */
     char            hostname[NC_MAXHOSTNAMELEN]; /* hostname */
     size_t          mbuf_chunk_size;             /* mbuf chunk size */
     pid_t           pid;                         /* process id */

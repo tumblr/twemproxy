@@ -19,7 +19,6 @@
 
 #include <nc_core.h>
 #include <nc_server.h>
-#include <nc_event.h>
 #include <nc_proxy.h>
 
 void
@@ -163,18 +162,18 @@ proxy_listen(struct context *ctx, struct conn *p)
         return NC_ERROR;
     }
 
-    status = event_add_conn(ctx->ep, p);
+    status = event_add_conn(ctx->evb, p);
     if (status < 0) {
-        log_error("event add conn e %d p %d on addr '%.*s' failed: %s",
-                  ctx->ep, p->sd, pool->addrstr.len, pool->addrstr.data,
+        log_error("event add conn p %d on addr '%.*s' failed: %s",
+                  p->sd, pool->addrstr.len, pool->addrstr.data,
                   strerror(errno));
         return NC_ERROR;
     }
 
-    status = event_del_out(ctx->ep, p);
+    status = event_del_out(ctx->evb, p);
     if (status < 0) {
-        log_error("event del out e %d p %d on addr '%.*s' failed: %s",
-                  ctx->ep, p->sd, pool->addrstr.len, pool->addrstr.data,
+        log_error("event del out p %d on addr '%.*s' failed: %s",
+                  p->sd, pool->addrstr.len, pool->addrstr.data,
                   strerror(errno));
         return NC_ERROR;
     }
@@ -200,9 +199,10 @@ proxy_each_init(void *elem, void *data)
         return status;
     }
 
-    log_debug(LOG_NOTICE, "p %d listening on '%.*s' in pool %"PRIu32" '%.*s' "
-              "with %"PRIu32" servers", p->sd, pool->addrstr.len,
-              pool->addrstr.data, pool->idx, pool->name.len, pool->name.data,
+    log_debug(LOG_NOTICE, "p %d listening on '%.*s' in %s pool %"PRIu32" '%.*s'"
+              " with %"PRIu32" servers", p->sd, pool->addrstr.len,
+              pool->addrstr.data, pool->redis ? "redis" : "memcache",
+              pool->idx, pool->name.len, pool->name.data,
               array_n(&pool->server));
 
     return NC_OK;
@@ -324,9 +324,9 @@ proxy_accept(struct context *ctx, struct conn *p)
         }
     }
 
-    status = event_add_conn(ctx->ep, c);
+    status = event_add_conn(ctx->evb, c);
     if (status < 0) {
-        log_error("event add conn of c %d from p %d failed: %s", c->sd, p->sd,
+        log_error("event add conn from p %d failed: %s", p->sd,
                   strerror(errno));
         c->close(ctx, c);
         return status;

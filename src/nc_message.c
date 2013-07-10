@@ -36,8 +36,8 @@
  *            +        +            .
  *            |        |            .
  *            /        \            .
- *         Request    Response      ...../ nc_mbuf.[ch]  (mesage buffers)
- *      nc_request.c  nc_response.c ...../ nc_parse.[ch] (message parser)
+ *         Request    Response      .../ nc_mbuf.[ch]  (mesage buffers)
+ *      nc_request.c  nc_response.c .../ nc_memcache.c; nc_redis.c (message parser)
  *
  * Messages in nutcracker are manipulated by a chain of processing handlers,
  * where each handler is responsible for taking the input and producing an
@@ -220,6 +220,11 @@ done:
     msg->parser = NULL;
     msg->result = MSG_PARSE_OK;
 
+    msg->pre_splitcopy = NULL;
+    msg->post_splitcopy = NULL;
+    msg->pre_coalesce = NULL;
+    msg->post_coalesce = NULL;
+
     msg->type = MSG_UNKNOWN;
 
     msg->key_start = NULL;
@@ -232,6 +237,13 @@ done:
     msg->frag_owner = NULL;
     msg->nfrag = 0;
     msg->frag_id = 0;
+
+    msg->narg_start = NULL;
+    msg->narg_end = NULL;
+    msg->narg = 0;
+    msg->rnarg = 0;
+    msg->rlen = 0;
+    msg->integer = 0;
 
     msg->err = 0;
     msg->error = 0;
@@ -264,13 +276,25 @@ msg_get(struct conn *conn, bool request, bool redis)
     msg->redis = redis ? 1 : 0;
 
     if (redis) {
-        NOT_REACHED();
+        if (request) {
+            msg->parser = redis_parse_req;
+        } else {
+            msg->parser = redis_parse_rsp;
+        }
+        msg->pre_splitcopy = redis_pre_splitcopy;
+        msg->post_splitcopy = redis_post_splitcopy;
+        msg->pre_coalesce = redis_pre_coalesce;
+        msg->post_coalesce = redis_post_coalesce;
     } else {
         if (request) {
             msg->parser = memcache_parse_req;
         } else {
             msg->parser = memcache_parse_rsp;
         }
+        msg->pre_splitcopy = memcache_pre_splitcopy;
+        msg->post_splitcopy = memcache_post_splitcopy;
+        msg->pre_coalesce = memcache_pre_coalesce;
+        msg->post_coalesce = memcache_post_coalesce;
     }
 
     log_debug(LOG_VVERB, "get msg %p id %"PRIu64" request %d owner sd %d",
@@ -280,12 +304,13 @@ msg_get(struct conn *conn, bool request, bool redis)
 }
 
 struct msg *
-msg_get_error(err_t err)
+msg_get_error(bool redis, err_t err)
 {
     struct msg *msg;
     struct mbuf *mbuf;
     int n;
     char *errstr = err ? strerror(err) : "unknown";
+    char *protstr = redis ? "-ERR" : "SERVER_ERROR";
 
     msg = _msg_get();
     if (msg == NULL) {
@@ -302,8 +327,7 @@ msg_get_error(err_t err)
     }
     mbuf_insert(&msg->mhdr, mbuf);
 
-    n = nc_scnprintf(mbuf->last, mbuf->end - mbuf->last, "SERVER_ERROR %s"CRLF,
-                     errstr);
+    n = nc_scnprintf(mbuf->last, mbuf_size(mbuf), "%s %s"CRLF, protstr, errstr);
     mbuf->last += n;
     msg->mlen = (uint32_t)n;
 
@@ -408,7 +432,7 @@ msg_parsed(struct context *ctx, struct conn *conn, struct msg *msg)
      * been parsed and nbuf is the portion of the message that is un-parsed.
      * Parse nbuf as a new message nmsg in the next iteration.
      */
-    nbuf = mbuf_split(&msg->mhdr, msg->pos, MCOPY_NIL, MCOPY_NIL);
+    nbuf = mbuf_split(&msg->mhdr, msg->pos, NULL, NULL);
     if (nbuf == NULL) {
         return NC_ENOMEM;
     }
@@ -433,20 +457,22 @@ msg_parsed(struct context *ctx, struct conn *conn, struct msg *msg)
 static rstatus_t
 msg_fragment(struct context *ctx, struct conn *conn, struct msg *msg)
 {
-    struct msg *nmsg;
-    struct mbuf *nbuf;
-    mcopy_type_t headcopy, tailcopy;
+    rstatus_t status;  /* return status */
+    struct msg *nmsg;  /* new message */
+    struct mbuf *nbuf; /* new mbuf */
 
     ASSERT(conn->client && !conn->proxy);
     ASSERT(msg->request);
-    ASSERT(msg->type == MSG_REQ_MC_GET || msg->type == MSG_REQ_MC_GETS);
 
-    headcopy = (msg->type == MSG_REQ_MC_GET) ? MCOPY_GET : MCOPY_GETS;
-    tailcopy = MCOPY_CRLF;
-
-    nbuf = mbuf_split(&msg->mhdr, msg->pos, headcopy, tailcopy);
+    nbuf = mbuf_split(&msg->mhdr, msg->pos, msg->pre_splitcopy, msg);
     if (nbuf == NULL) {
         return NC_ENOMEM;
+    }
+
+    status = msg->post_splitcopy(msg);
+    if (status != NC_OK) {
+        mbuf_put(nbuf);
+        return status;
     }
 
     nmsg = msg_get(msg->owner, msg->request, msg->redis);
@@ -528,7 +554,7 @@ msg_repair(struct context *ctx, struct conn *conn, struct msg *msg)
 {
     struct mbuf *nbuf;
 
-    nbuf = mbuf_split(&msg->mhdr, msg->pos, MCOPY_NIL, MCOPY_NIL);
+    nbuf = mbuf_split(&msg->mhdr, msg->pos, NULL, NULL);
     if (nbuf == NULL) {
         return NC_ENOMEM;
     }
@@ -733,6 +759,9 @@ msg_send_chain(struct context *ctx, struct conn *conn, struct msg *msg)
         TAILQ_REMOVE(&send_msgq, msg, m_tqe);
 
         if (nsent == 0) {
+            if (msg->mlen == 0) {
+                conn->send_done(ctx, conn, msg);
+            }
             continue;
         }
 

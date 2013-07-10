@@ -53,6 +53,7 @@
 #define CONF_DEFAULT_SERVER_RETRY_TIMEOUT    30 * 1000      /* in msec */
 #define CONF_DEFAULT_SERVER_FAILURE_LIMIT    2
 #define CONF_DEFAULT_SERVER_CONNECTIONS      1
+#define CONF_DEFAULT_KETAMA_PORT             11211
 
 struct conf_listen {
     struct string   pname;   /* listen: as "name:port" */
@@ -63,18 +64,19 @@ struct conf_listen {
 };
 
 struct conf_server {
-    struct string   pname;   /* server: as "name:port:weight" */
-    struct string   name;    /* name */
-    int             port;    /* port */
-    int             weight;  /* weight */
-    struct sockinfo info;    /* connect socket info */
-    unsigned        valid:1; /* valid? */
+    struct string   pname;      /* server: as "name:port:weight" */
+    struct string   name;       /* name */
+    int             port;       /* port */
+    int             weight;     /* weight */
+    struct sockinfo info;       /* connect socket info */
+    unsigned        valid:1;    /* valid? */
 };
 
 struct conf_pool {
     struct string      name;                  /* pool name (root node) */
     struct conf_listen listen;                /* listen: */
     hash_type_t        hash;                  /* hash: */
+    struct string      hash_tag;              /* hash_tag: */
     dist_type_t        distribution;          /* distribution: */
     int                timeout;               /* timeout: */
     int                backlog;               /* backlog: */
@@ -120,9 +122,10 @@ char *conf_set_string(struct conf *cf, struct command *cmd, void *conf);
 char *conf_set_listen(struct conf *cf, struct command *cmd, void *conf);
 char *conf_add_server(struct conf *cf, struct command *cmd, void *conf);
 char *conf_set_num(struct conf *cf, struct command *cmd, void *conf);
-char * conf_set_bool(struct conf *cf, struct command *cmd, void *conf);
+char *conf_set_bool(struct conf *cf, struct command *cmd, void *conf);
 char *conf_set_hash(struct conf *cf, struct command *cmd, void *conf);
 char *conf_set_distribution(struct conf *cf, struct command *cmd, void *conf);
+char *conf_set_hashtag(struct conf *cf, struct command *cmd, void *conf);
 
 rstatus_t conf_server_each_transform(void *elem, void *data);
 rstatus_t conf_pool_each_transform(void *elem, void *data);
